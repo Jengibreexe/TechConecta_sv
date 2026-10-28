@@ -25,6 +25,13 @@
   .badge { font-size:.75rem; padding:2px 8px; border-radius:99px; background:var(--gris); border:1px solid var(--borde); margin-left:6px; }
   .muted { color:#5b6675; font-size:.85rem; }
   #toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); padding:10px 16px; border-radius:8px; color:#fff; display:none; }
+  dialog { border:0; border-radius:10px; padding:0; width:min(440px, calc(100% - 28px)); box-shadow:0 12px 40px #0004; color:#1c2430; }
+  dialog::backdrop { background:#0008; }
+  .modal-body { padding:18px; } .modal-body h2 { margin-top:0; }
+  .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+  .modal-actions button { margin:0; }
+  .profile-photo { width:120px; height:120px; object-fit:cover; border-radius:50%; display:block; margin:0 auto 12px; }
+  .review { border-top:1px solid var(--borde); padding-top:8px; margin-top:8px; }
 </style>
 </head>
 <body>
@@ -62,6 +69,26 @@ function toast(msg, error = false) {
   t.style.background = error ? 'var(--mal)' : 'var(--ok)';
   t.style.display = 'block';
   setTimeout(() => (t.style.display = 'none'), 3500);
+}
+
+function modal(title, content, onConfirm, confirmText = 'Guardar', confirmClass = '') {
+  const dialog = h('dialog');
+  const cancel = h('button', { type: 'button', class: 'sec', onclick: () => dialog.close() }, 'Cancelar');
+  const confirm = h('button', { type: 'button', class: confirmClass, onclick: async () => {
+    confirm.disabled = true;
+    try { await onConfirm(); dialog.close(); } catch (e) { toast(e.message, true); }
+    finally { confirm.disabled = false; }
+  } }, confirmText);
+  dialog.append(h('div', { class: 'modal-body' }, h('h2', {}, title), content,
+    h('div', { class: 'modal-actions' }, cancel, confirm)));
+  document.body.append(dialog);
+  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  dialog.showModal();
+  return dialog;
+}
+
+function confirmModal(title, message, onConfirm, confirmText = 'Confirmar', confirmClass = 'mal') {
+  return modal(title, h('p', {}, message), onConfirm, confirmText, confirmClass);
 }
 
 async function api(path, { method = 'GET', body } = {}) {
@@ -139,24 +166,38 @@ function tarjetaSolicitud(s, recargar) {
   const acciones = [];
   const esCliente = me.rol === 'cliente';
   if (esCliente && ['pendiente', 'aceptada'].includes(s.estado))
-    acciones.push(h('button', { class: 'mal', onclick: run(async () => { await api(`/solicitudes/${s.id}/cancelar`, { method: 'PATCH' }); recargar(); }) }, 'Cancelar'));
-  if (esCliente && s.estado === 'completada')
-    acciones.push(h('button', { onclick: run(async () => {
-      const cal = Number(prompt('Calificación (1 a 5):'));
-      if (!cal) return;
-      const comentario = prompt('Comentario (opcional):') || '';
-      await api('/resenas', { method: 'POST', body: { solicitud_id: s.id, calificacion: cal, comentario } });
-      toast('¡Gracias por tu reseña!');
-    }) }, 'Calificar'));
+    acciones.push(h('button', { class: 'mal', onclick: () => confirmModal(
+      'Cancelar solicitud', '¿Seguro que deseas cancelar esta solicitud?',
+      async () => { await api(`/solicitudes/${s.id}/cancelar`, { method: 'PATCH' }); recargar(); },
+      'Sí, cancelar') }, 'Cancelar'));
+  if (esCliente && s.estado === 'completada' && !s.resena_id)
+    acciones.push(h('button', { onclick: () => {
+      const cal = h('input', { type: 'number', min: '1', max: '5', step: '1', required: 'true' });
+      const comentario = h('textarea', { rows: '3', placeholder: 'Comentario (opcional)' });
+      modal('Calificar servicio', h('div', {},
+        h('label', {}, 'Calificación (1 a 5)'), cal,
+        h('label', {}, 'Comentario'), comentario), async () => {
+        const rating = Number(cal.value);
+        if (!Number.isInteger(rating) || rating < 1 || rating > 5)
+          throw new Error('La calificación debe ser un número entero entre 1 y 5');
+        await api('/resenas', { method: 'POST', body: {
+          solicitud_id: s.id, calificacion: rating, comentario: comentario.value.trim() } });
+        toast('¡Gracias por tu reseña!');
+        await recargar();
+      }, 'Enviar reseña');
+    } }, 'Calificar'));
   if (!esCliente && s.estado === 'pendiente')
     acciones.push(h('button', { onclick: run(async () => { await api(`/solicitudes/${s.id}/aceptar`, { method: 'PATCH' }); toast('Solicitud aceptada'); recargar(); }) }, 'Aceptar'));
   if (!esCliente && s.estado === 'aceptada' && s.tecnico_id === me.id)
-    acciones.push(h('button', { onclick: run(async () => {
-      const costo = Number(prompt('Costo final en USD:'));
-      if (!costo) return;
-      await api(`/solicitudes/${s.id}/completar`, { method: 'PATCH', body: { costo } });
-      recargar();
-    }) }, 'Completar'));
+    acciones.push(h('button', { onclick: () => {
+      const costo = h('input', { type: 'number', min: '0', step: '0.01', required: 'true' });
+      modal('Completar solicitud', h('div', {}, h('label', {}, 'Costo final en USD'), costo), async () => {
+        const amount = Number(costo.value);
+        if (!Number.isFinite(amount) || amount < 0) throw new Error('Indica un costo válido');
+        await api(`/solicitudes/${s.id}/completar`, { method: 'PATCH', body: { costo: amount } });
+        await recargar();
+      }, 'Completar');
+    } }, 'Completar'));
   return h('div', { class: 'card' },
     h('strong', {}, s.especialidad), h('span', { class: 'badge' }, s.estado),
     h('p', {}, s.descripcion || '(sin descripción)'),
@@ -183,7 +224,8 @@ function renderCliente() {
     for (const t of r) resultados.append(h('div', { class: 'card' },
       h('strong', {}, t.nombre), h('span', { class: 'badge' }, t.especialidad),
       t.verificado ? h('span', { class: 'badge' }, 'Verificado') : '',
-      h('p', {}, `★ ${t.rating} · ${t.distancia_km.toFixed(1)} km` + (t.tarifa_hora ? ` · $${t.tarifa_hora}/h` : ''))));
+      h('p', {}, `★ ${t.rating} · ${t.distancia_km.toFixed(1)} km` + (t.tarifa_hora ? ` · $${t.tarifa_hora}/h` : '')),
+      h('button', { class: 'sec', onclick: run(() => mostrarPerfilTecnico(t.id)) }, 'Ver perfil')));
   }) }, 'Buscar técnicos');
 
   const pedir = h('button', { onclick: run(async () => {
@@ -200,6 +242,26 @@ function renderCliente() {
   run(cargarSolicitudes)(mias);
 }
 
+async function mostrarPerfilTecnico(id) {
+  const perfil = await api(`/tecnicos/${id}/perfil`);
+  const contenido = h('div', {});
+  if (perfil.foto) contenido.append(h('img', { class: 'profile-photo', src: perfil.foto, alt: `Foto de ${perfil.nombre}` }));
+  contenido.append(h('p', {}, h('strong', {}, perfil.nombre)),
+    h('p', {}, `${perfil.especialidad} · ★ ${perfil.rating}`),
+    perfil.verificado ? h('p', { class: 'muted' }, 'Técnico verificado') : '',
+    perfil.telefono ? h('p', {}, `Teléfono: ${perfil.telefono}`) : '',
+    perfil.tarifa_hora ? h('p', {}, `Tarifa: $${perfil.tarifa_hora}/h`) : '');
+  const reviews = h('div', {});
+  reviews.append(h('h3', {}, 'Reseñas'));
+  if (!perfil.resenas.length) reviews.append(h('p', { class: 'muted' }, 'Todavía no tiene reseñas.'));
+  for (const review of perfil.resenas) reviews.append(h('div', { class: 'review' },
+    h('strong', {}, `★ ${review.calificacion}`),
+    review.comentario ? h('p', {}, review.comentario) : '',
+    h('small', { class: 'muted' }, new Date(review.creado_en).toLocaleDateString())));
+  contenido.append(reviews);
+  modal(`Perfil de ${perfil.nombre}`, contenido, async () => {}, 'Cerrar', 'sec');
+}
+
 // ---------------- Técnico ----------------
 function renderTecnico() {
   const t = me.tecnicos || {};
@@ -208,6 +270,38 @@ function renderTecnico() {
   disp.value = String(t.disponible ?? true);
   const label = h('p', { class: 'muted' }, posText());
   const lista = h('div', { class: 'list' });
+  const foto = h('img', { alt: 'Foto de perfil', style: 'display:none;max-width:180px;border-radius:8px;margin-top:8px' });
+  const fotoInput = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+  const fotoStatus = h('p', { class: 'muted' }, 'JPG, PNG o WebP; máximo 5 MB.');
+  const cargarFoto = async () => {
+    try {
+      const r = await api(`/tecnicos/${me.id}/foto`);
+      foto.src = r.url;
+      foto.style.display = 'block';
+    } catch (error) {
+      if (!error.message.includes('no tiene foto')) throw error;
+      foto.style.display = 'none';
+    }
+  };
+  const subirFoto = h('button', { onclick: run(async () => {
+    const file = fotoInput.files[0];
+    if (!file) return toast('Selecciona una imagen', true);
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type))
+      return toast('Sólo se permiten imágenes JPG, PNG o WebP', true);
+    if (file.size > 5 * 1024 * 1024) return toast('La imagen no puede superar 5 MB', true);
+    fotoStatus.textContent = 'Preparando subida...';
+    const form = new FormData();
+    form.append('foto', file);
+    const response = await fetch(API + '/tecnicos/me/foto', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token },
+      body: form,
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || 'No se pudo subir la imagen');
+    fotoStatus.textContent = 'Foto actualizada.';
+    await cargarFoto();
+  }) }, 'Subir foto');
   const guardar = h('button', { onclick: run(async () => {
     await getPos();
     label.textContent = posText();
@@ -218,9 +312,11 @@ function renderTecnico() {
 
   $('#app').replaceChildren(
     h('section', {}, h('h2', {}, `Mi perfil (${t.especialidad || 'técnico'}) · ★ ${t.rating ?? 0}`),
+      h('label', {}, 'Foto de perfil'), fotoInput, fotoStatus, subirFoto, foto,
       h('div', { class: 'row' }, h('div', {}, h('label', {}, 'Tarifa por hora (USD)'), tarifa), h('div', {}, h('label', {}, 'Estado'), disp)),
       label, guardar),
     h('section', {}, h('h2', {}, 'Solicitudes'), h('button', { class: 'sec', onclick: () => run(cargarSolicitudes)(lista) }, 'Actualizar'), lista));
+  run(cargarFoto)();
   run(cargarSolicitudes)(lista);
 }
 

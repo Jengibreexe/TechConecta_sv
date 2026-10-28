@@ -37,6 +37,28 @@ Prueba con Postman / Thunder Client:
 ### Probar el frontend en local
 Con la API corriendo (`npm run dev`), abre `web/index.html` con la extensión **Live Server** de VS Code (clic derecho → Open with Live Server). Detecta `localhost` y usa `http://localhost:3000`. Registra un técnico y un cliente en dos ventanas (una normal y una de incógnito) para ver el flujo completo.
 
+### Foto de perfil del técnico (Supabase Storage)
+
+La aplicación permite que un técnico suba una foto JPG, PNG o WebP de hasta 5 MB. El bucket privado `fotos-perfil` lo administra Supabase Storage; no se necesita AWS S3, IAM ni una tabla adicional. La API usa el JWT del usuario para aplicar las políticas RLS de `storage.objects` y genera URLs firmadas de corta duración.
+
+Ejecuta el esquema completo de [supabase/schema.sql](supabase/schema.sql). También puedes crear el bucket desde **Supabase → Storage → New bucket**, con estas opciones:
+
+1. Nombre: `fotos-perfil`.
+2. Bucket público: desactivado.
+3. Límite: 5 MB.
+4. Tipos permitidos: `image/jpeg`, `image/png`, `image/webp`.
+
+El SQL deja configurado el bucket y sus políticas. Agrega al `.env` de la API:
+
+> Ejecuta este esquema en un proyecto nuevo o como una migración controlada. Si ya lo ejecutaste antes, no lo pegues por segunda vez sin revisar los objetos existentes, porque los tipos, tablas, triggers y políticas tienen nombres fijos.
+
+```env
+SUPABASE_STORAGE_BUCKET=fotos-perfil
+SUPABASE_URL_EXPIRY_SECONDS=300
+```
+
+No agregues credenciales de servicio al frontend ni al repositorio. La clave `SUPABASE_ANON_KEY` se usa en la API junto con el JWT del usuario; Storage aplica las políticas de acceso por usuario.
+
 ## 3. GitHub
 ```bash
 git init && git add . && git commit -m "MVP TechConecta"
@@ -60,7 +82,7 @@ sudo npm install -g pm2
 mkdir -p ~/techconecta-api
 sudo mkdir -p /var/www/techconecta && sudo chown $USER:$USER /var/www/techconecta
 ```
-5. Crea `~/techconecta-api/.env` en el servidor con `PORT=3000`, `SUPABASE_URL` y `SUPABASE_ANON_KEY`
+5. Crea `~/techconecta-api/.env` en el servidor con `PORT=3000`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_STORAGE_BUCKET` y `SUPABASE_URL_EXPIRY_SECONDS`
    (el workflow no lo sobrescribe).
 6. Nginx:
 ```bash
