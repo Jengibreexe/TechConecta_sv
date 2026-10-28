@@ -17,9 +17,9 @@ create table tecnicos (
   especialidad text not null,
   zona text,
   verificado boolean not null default false,
-  tarifa_hora numeric(8,2),
-  latitud double precision,
-  longitud double precision,
+  tarifa_hora numeric(8,2) check (tarifa_hora is null or tarifa_hora >= 0),
+  latitud double precision check (latitud is null or latitud between -90 and 90),
+  longitud double precision check (longitud is null or longitud between -180 and 180),
   disponible boolean not null default true,
   rating numeric(2,1) not null default 0
 );
@@ -33,7 +33,11 @@ create table solicitudes (
   latitud double precision,
   longitud double precision,
   estado estado_solicitud not null default 'pendiente',
-  costo numeric(8,2),
+  costo numeric(8,2) check (costo is null or costo >= 0),
+  constraint solicitudes_latitud_valida
+    check (latitud is null or latitud between -90 and 90),
+  constraint solicitudes_longitud_valida
+    check (longitud is null or longitud between -180 and 180),
   creado_en timestamptz not null default now()
 );
 
@@ -47,6 +51,9 @@ create table resenas (
   creado_en timestamptz not null default now()
 );
 
+-- Una reseña por cada trabajo completado; sí se permiten reseñas de trabajos distintos.
+create unique index if not exists resenas_una_por_solicitud on resenas (solicitud_id);
+
 create index on solicitudes (cliente_id);
 create index on solicitudes (tecnico_id);
 create index on solicitudes (estado, especialidad);
@@ -58,6 +65,10 @@ create or replace function handle_new_user() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare v_rol rol_usuario;
 begin
+  if coalesce(new.raw_user_meta_data->>'rol', 'cliente')
+     not in ('cliente', 'tecnico') then
+    raise exception 'Rol inválido: debe ser cliente o tecnico';
+  end if;
   v_rol := coalesce(new.raw_user_meta_data->>'rol', 'cliente')::rol_usuario;
   insert into perfiles (id, nombre, telefono, rol)
   values (new.id, coalesce(new.raw_user_meta_data->>'nombre', 'Sin nombre'),
@@ -101,7 +112,8 @@ language sql stable as $$
       cos(radians(p_lat)) * cos(radians(t.latitud)) *
       power(sin(radians(t.longitud - p_lng) / 2), 2))) as km
   ) d
-  where t.disponible and t.latitud is not null and t.longitud is not null
+  where p_radio_km >= 0
+    and t.disponible and t.latitud is not null and t.longitud is not null
     and (p_especialidad is null or t.especialidad ilike p_especialidad)
     and d.km <= p_radio_km
   order by d.km;
@@ -148,4 +160,47 @@ create policy resenas_insert on resenas for insert to authenticated with check (
   and exists (select 1 from solicitudes s
               where s.id = solicitud_id and s.cliente_id = auth.uid()
                 and s.estado = 'completada' and s.tecnico_id = resenas.tecnico_id)
+);
+
+-- ================= SUPABASE STORAGE =================
+-- Crear el bucket privado una sola vez (también puede hacerse desde Storage > New bucket).
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('fotos-perfil', 'fotos-perfil', false, 5242880,
+        array['image/jpeg', 'image/png', 'image/webp'])
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+create policy fotos_perfil_select on storage.objects
+for select to authenticated
+using (bucket_id = 'fotos-perfil');
+
+create policy fotos_perfil_insert on storage.objects
+for insert to authenticated
+with check (
+  bucket_id = 'fotos-perfil'
+  and (storage.foldername(name))[1] = 'perfiles'
+  and (storage.foldername(name))[2] = (select auth.uid()::text)
+);
+
+create policy fotos_perfil_update on storage.objects
+for update to authenticated
+using (
+  bucket_id = 'fotos-perfil'
+  and (storage.foldername(name))[1] = 'perfiles'
+  and (storage.foldername(name))[2] = (select auth.uid()::text)
+)
+with check (
+  bucket_id = 'fotos-perfil'
+  and (storage.foldername(name))[1] = 'perfiles'
+  and (storage.foldername(name))[2] = (select auth.uid()::text)
+);
+
+create policy fotos_perfil_delete on storage.objects
+for delete to authenticated
+using (
+  bucket_id = 'fotos-perfil'
+  and (storage.foldername(name))[1] = 'perfiles'
+  and (storage.foldername(name))[2] = (select auth.uid()::text)
 );
