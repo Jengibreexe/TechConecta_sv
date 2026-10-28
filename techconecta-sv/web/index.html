@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TechConecta SV</title>
+<style>
+  :root { --azul:#0b5cab; --gris:#f3f5f8; --borde:#d9dee5; --ok:#1a7f4b; --mal:#b3261e; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--gris); color:#1c2430; }
+  header { background:var(--azul); color:#fff; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
+  header h1 { margin:0; font-size:1.2rem; } header h1 span { opacity:.7; }
+  main { max-width:860px; margin:20px auto; padding:0 14px; display:grid; gap:16px; }
+  section { background:#fff; border:1px solid var(--borde); border-radius:10px; padding:16px; }
+  h2 { margin:0 0 10px; font-size:1.05rem; }
+  label { display:block; font-size:.85rem; margin:8px 0 3px; }
+  input, select, textarea { width:100%; padding:8px; border:1px solid var(--borde); border-radius:6px; font:inherit; }
+  button { background:var(--azul); color:#fff; border:0; padding:8px 14px; border-radius:6px; cursor:pointer; font:inherit; margin:8px 6px 0 0; }
+  button.sec { background:#fff; color:var(--azul); border:1px solid var(--azul); }
+  button.mal { background:var(--mal); }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .list { display:grid; gap:8px; margin-top:10px; }
+  .card { border:1px solid var(--borde); border-radius:8px; padding:10px; }
+  .card p { margin:4px 0; font-size:.9rem; }
+  .badge { font-size:.75rem; padding:2px 8px; border-radius:99px; background:var(--gris); border:1px solid var(--borde); margin-left:6px; }
+  .muted { color:#5b6675; font-size:.85rem; }
+  #toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); padding:10px 16px; border-radius:8px; color:#fff; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TechConecta <span>SV</span></h1>
+  <div id="who"></div>
+</header>
+<main id="app"></main>
+<div id="toast"></div>
+
+<script>
+// En local la API corre en :3000; en EC2, Nginx la expone en /api
+const API = ['localhost', '127.0.0.1'].includes(location.hostname) ? 'http://localhost:3000' : '/api';
+
+let token = localStorage.getItem('tc_token');
+let me = null;
+let pos = { lat: 13.6929, lng: -89.2182 }; // San Salvador por defecto
+
+const $ = (s) => document.querySelector(s);
+
+// Crea elementos con textContent (evita inyección de HTML)
+function h(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of kids.flat()) e.append(c instanceof Node ? c : String(c ?? ''));
+  return e;
+}
+
+function toast(msg, error = false) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.style.background = error ? 'var(--mal)' : 'var(--ok)';
+  t.style.display = 'block';
+  setTimeout(() => (t.style.display = 'none'), 3500);
+}
+
+async function api(path, { method = 'GET', body } = {}) {
+  const res = await fetch(API + path, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Error ' + res.status);
+  return data;
+}
+
+// Envuelve acciones para mostrar errores sin romper la página
+const run = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
+
+function getPos() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve(pos);
+    navigator.geolocation.getCurrentPosition(
+      (p) => { pos = { lat: p.coords.latitude, lng: p.coords.longitude }; resolve(pos); },
+      () => { toast('No se pudo obtener la ubicación; se usa San Salvador', true); resolve(pos); }
+    );
+  });
+}
+
+const posText = () => `Ubicación: ${pos.lat.toFixed(4)}, ${pos.lng.toFixed(4)}`;
+
+// ---------------- Autenticación ----------------
+function renderAuth() {
+  $('#who').replaceChildren();
+  const email = h('input', { type: 'email' });
+  const pass = h('input', { type: 'password' });
+  const nombre = h('input');
+  const tel = h('input');
+  const rol = h('select', {}, h('option', { value: 'cliente' }, 'Cliente'), h('option', { value: 'tecnico' }, 'Técnico'));
+  const esp = h('input', { placeholder: 'electricista, plomero, aire acondicionado…' });
+  const espWrap = h('div', { style: 'display:none' }, h('label', {}, 'Especialidad'), esp);
+  rol.addEventListener('change', () => (espWrap.style.display = rol.value === 'tecnico' ? 'block' : 'none'));
+  const reg = h('div', { style: 'display:none' },
+    h('label', {}, 'Nombre'), nombre, h('label', {}, 'Teléfono'), tel, h('label', {}, 'Soy'), rol, espWrap);
+  let modoRegistro = false;
+  const btn = h('button', { onclick: run(async () => {
+    if (modoRegistro) {
+      await api('/auth/register', { method: 'POST', body: {
+        email: email.value, password: pass.value, nombre: nombre.value, telefono: tel.value, rol: rol.value, especialidad: esp.value } });
+      toast('Cuenta creada. Ahora inicia sesión.');
+      toggle.click();
+      return;
+    }
+    const r = await api('/auth/login', { method: 'POST', body: { email: email.value, password: pass.value } });
+    token = r.access_token;
+    localStorage.setItem('tc_token', token);
+    await start();
+  }) }, 'Iniciar sesión');
+  const toggle = h('button', { class: 'sec', onclick: () => {
+    modoRegistro = !modoRegistro;
+    reg.style.display = modoRegistro ? 'block' : 'none';
+    btn.textContent = modoRegistro ? 'Crear cuenta' : 'Iniciar sesión';
+    toggle.textContent = modoRegistro ? 'Ya tengo cuenta' : 'Crear cuenta nueva';
+  } }, 'Crear cuenta nueva');
+  $('#app').replaceChildren(h('section', {}, h('h2', {}, 'Bienvenido'),
+    h('label', {}, 'Correo'), email, h('label', {}, 'Contraseña'), pass, reg, btn, toggle));
+}
+
+// ---------------- Solicitudes (compartido) ----------------
+async function cargarSolicitudes(cont) {
+  const lista = await api('/solicitudes');
+  cont.replaceChildren();
+  if (!lista.length) cont.append(h('p', { class: 'muted' }, 'Sin solicitudes por ahora.'));
+  for (const s of lista) cont.append(tarjetaSolicitud(s, () => run(cargarSolicitudes)(cont)));
+}
+
+function tarjetaSolicitud(s, recargar) {
+  const acciones = [];
+  const esCliente = me.rol === 'cliente';
+  if (esCliente && ['pendiente', 'aceptada'].includes(s.estado))
+    acciones.push(h('button', { class: 'mal', onclick: run(async () => { await api(`/solicitudes/${s.id}/cancelar`, { method: 'PATCH' }); recargar(); }) }, 'Cancelar'));
+  if (esCliente && s.estado === 'completada')
+    acciones.push(h('button', { onclick: run(async () => {
+      const cal = Number(prompt('Calificación (1 a 5):'));
+      if (!cal) return;
+      const comentario = prompt('Comentario (opcional):') || '';
+      await api('/resenas', { method: 'POST', body: { solicitud_id: s.id, calificacion: cal, comentario } });
+      toast('¡Gracias por tu reseña!');
+    }) }, 'Calificar'));
+  if (!esCliente && s.estado === 'pendiente')
+    acciones.push(h('button', { onclick: run(async () => { await api(`/solicitudes/${s.id}/aceptar`, { method: 'PATCH' }); toast('Solicitud aceptada'); recargar(); }) }, 'Aceptar'));
+  if (!esCliente && s.estado === 'aceptada' && s.tecnico_id === me.id)
+    acciones.push(h('button', { onclick: run(async () => {
+      const costo = Number(prompt('Costo final en USD:'));
+      if (!costo) return;
+      await api(`/solicitudes/${s.id}/completar`, { method: 'PATCH', body: { costo } });
+      recargar();
+    }) }, 'Completar'));
+  return h('div', { class: 'card' },
+    h('strong', {}, s.especialidad), h('span', { class: 'badge' }, s.estado),
+    h('p', {}, s.descripcion || '(sin descripción)'),
+    h('p', { class: 'muted' }, new Date(s.creado_en).toLocaleString() + (s.costo ? ` · $${s.costo}` : '')),
+    acciones);
+}
+
+// ---------------- Cliente ----------------
+function renderCliente() {
+  const esp = h('input', { placeholder: 'electricista, plomero, aire acondicionado…' });
+  const radio = h('input', { type: 'number', value: '5', min: '1' });
+  const resultados = h('div', { class: 'list' });
+  const desc = h('textarea', { rows: '2', placeholder: 'Describe el problema' });
+  const mias = h('div', { class: 'list' });
+  const label = h('p', { class: 'muted' }, posText());
+  const miUbi = h('button', { class: 'sec', onclick: run(async () => { await getPos(); label.textContent = posText(); }) }, 'Usar mi ubicación');
+
+  const buscar = h('button', { onclick: run(async () => {
+    const q = new URLSearchParams({ lat: pos.lat, lng: pos.lng, radio_km: radio.value });
+    if (esp.value) q.set('especialidad', esp.value);
+    const r = await api('/tecnicos?' + q);
+    resultados.replaceChildren();
+    if (!r.length) resultados.append(h('p', { class: 'muted' }, 'No hay técnicos cercanos con esos filtros.'));
+    for (const t of r) resultados.append(h('div', { class: 'card' },
+      h('strong', {}, t.nombre), h('span', { class: 'badge' }, t.especialidad),
+      t.verificado ? h('span', { class: 'badge' }, 'Verificado') : '',
+      h('p', {}, `★ ${t.rating} · ${t.distancia_km.toFixed(1)} km` + (t.tarifa_hora ? ` · $${t.tarifa_hora}/h` : ''))));
+  }) }, 'Buscar técnicos');
+
+  const pedir = h('button', { onclick: run(async () => {
+    if (!esp.value) return toast('Indica la especialidad arriba', true);
+    await api('/solicitudes', { method: 'POST', body: { especialidad: esp.value, descripcion: desc.value, latitud: pos.lat, longitud: pos.lng } });
+    toast('Solicitud creada'); desc.value = ''; run(cargarSolicitudes)(mias);
+  }) }, 'Solicitar servicio');
+
+  $('#app').replaceChildren(
+    h('section', {}, h('h2', {}, 'Buscar y solicitar'),
+      h('div', { class: 'row' }, h('div', {}, h('label', {}, 'Especialidad'), esp), h('div', {}, h('label', {}, 'Radio (km)'), radio)),
+      label, miUbi, h('label', {}, 'Descripción del problema'), desc, buscar, pedir, resultados),
+    h('section', {}, h('h2', {}, 'Mis solicitudes'), mias));
+  run(cargarSolicitudes)(mias);
+}
+
+// ---------------- Técnico ----------------
+function renderTecnico() {
+  const t = me.tecnicos || {};
+  const tarifa = h('input', { type: 'number', min: '0', value: t.tarifa_hora ?? '' });
+  const disp = h('select', {}, h('option', { value: 'true' }, 'Disponible'), h('option', { value: 'false' }, 'No disponible'));
+  disp.value = String(t.disponible ?? true);
+  const label = h('p', { class: 'muted' }, posText());
+  const lista = h('div', { class: 'list' });
+  const guardar = h('button', { onclick: run(async () => {
+    await getPos();
+    label.textContent = posText();
+    await api('/tecnicos/me', { method: 'PATCH', body: {
+      latitud: pos.lat, longitud: pos.lng, disponible: disp.value === 'true', tarifa_hora: tarifa.value ? Number(tarifa.value) : undefined } });
+    toast('Perfil actualizado');
+  }) }, 'Guardar y compartir mi ubicación');
+
+  $('#app').replaceChildren(
+    h('section', {}, h('h2', {}, `Mi perfil (${t.especialidad || 'técnico'}) · ★ ${t.rating ?? 0}`),
+      h('div', { class: 'row' }, h('div', {}, h('label', {}, 'Tarifa por hora (USD)'), tarifa), h('div', {}, h('label', {}, 'Estado'), disp)),
+      label, guardar),
+    h('section', {}, h('h2', {}, 'Solicitudes'), h('button', { class: 'sec', onclick: () => run(cargarSolicitudes)(lista) }, 'Actualizar'), lista));
+  run(cargarSolicitudes)(lista);
+}
+
+// ---------------- Inicio ----------------
+async function start() {
+  if (!token) return renderAuth();
+  try { me = await api('/me'); }
+  catch { token = null; localStorage.removeItem('tc_token'); return renderAuth(); }
+  $('#who').replaceChildren(`${me.nombre} (${me.rol}) `,
+    h('button', { class: 'sec', onclick: () => { localStorage.removeItem('tc_token'); token = null; me = null; renderAuth(); } }, 'Salir'));
+  me.rol === 'tecnico' ? renderTecnico() : renderCliente();
+}
+start();
+</script>
+</body>
+</html>
