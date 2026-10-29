@@ -44,7 +44,7 @@
 
 <script>
 // En local la API corre en :3000; en EC2, Nginx la expone en /api
-const API = ['localhost', '127.0.0.1'].includes(location.hostname) ? 'http://localhost:3000' : 'https://github.com/Brand-17-git/TechConecta_sv';
+const API = ['localhost', '127.0.0.1'].includes(location.hostname) ? 'http://localhost:3000' : 'https://techconecta-sv.onrender.com';
 
 let token = localStorage.getItem('tc_token');
 let me = null;
